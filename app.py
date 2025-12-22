@@ -211,7 +211,7 @@ if st.button("🛠 执行特征工程", use_container_width=True):
             processed_fe = FE(raw_f, [n_MA], [n_D], 12, 12, features_op, use_kalman)
             st.session_state['feature_data_after'] = processed_fe
             st.success("特征工程完成！")
-            st.dataframe(processed_fe.tail())
+            st.dataframe(processed_fe)
 
 
 if st.button("🚀 执行回测分析", use_container_width=True):
