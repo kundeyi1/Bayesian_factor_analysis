@@ -282,6 +282,7 @@ def bayesian_analysis(price_data, feature_data, profit_setted, observation_perio
 st.set_page_config(page_title="煤炭择时因子回测系统", layout="wide")
 st.title("煤炭行业贝叶斯择时回测平台")
 
+
 # 初始化 Session State 用于跨按钮保存特征数据
 if 'feature_data_after' not in st.session_state:
     st.session_state['feature_data_after'] = None
@@ -289,10 +290,43 @@ if 'feature_data_after' not in st.session_state:
 st.sidebar.header("策略参数配置")
 stock_selected = st.sidebar.selectbox("选择标的", ["中国神华"])
 baseline_selected = st.sidebar.selectbox("选择基准", ["沪深300"])
-feature_selected = st.sidebar.selectbox("特征维度", ["可用天数", "沿海煤炭运价指数", "北方港合计库存量", "全国统筹电厂存煤可用天数（推荐移动平均30日）"])
+
+
+def get_all_sheet_names(sheet_id):
+    # 构造导出 XLSX 的直链
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
+    
+    try:
+        # 1. 使用 ExcelFile 加载整个工作簿（不加载数据，只读结构，速度快）
+        xl = pd.ExcelFile(url)
+        
+        # 2. 获取所有表名
+        all_sheets = xl.sheet_names
+        return all_sheets, xl
+    except Exception as e:
+        st.error(f"无法识别表格结构: {e}")
+        return [], None
+
+# --- 在 Streamlit 界面中的应用 ---
+SHEET_ID = "1P3446_9mBi-7qrAMi78F1gHDHGIOCjw-"
+
+# 自动获取
+sheet_list, xl_object = get_all_sheet_names(SHEET_ID)
+
+if sheet_list:
+    # 动态生成下拉框，选项就是从云端实时抓取的表名
+    feature_selected = st.sidebar.selectbox("特征维度", sheet_list)
+    
+    # 根据用户选择，从已加载的对象中读取具体数据
+    if st.button("加载选定表数据"):
+        df = xl_object.parse(feature_selected) # parse 比再次 read_excel 更快
+        st.write(f"已加载 {feature_selected} 数据：")
+        st.dataframe(df)
+
+
 feature_frequence = st.sidebar.selectbox("特征频率", ["日", "周", "月"])
 use_kalman = st.sidebar.checkbox("启用卡尔曼滤波", value=True)
-features_op = st.sidebar.multiselect("对所选特征进行的操作", ["移动平均", "差分", "一阶导数", "二阶导数"], default=["一阶导数", "二阶导数"])
+features_op = st.sidebar.multiselect("对所选特征进行的操作", ["移动平均", "差分", "一阶导数", "二阶导数"])
 
 n_MA = st.sidebar.slider("移动平均数", 1, 365, 5)
 n_D = st.sidebar.slider("差分数", 1, 10, 1)
@@ -307,8 +341,9 @@ s_input = st.sidebar.text_area("策略逻辑 (Python 表达式)",
 def load_data(stock, baseline, feature):
     stock_df = pd.read_excel('stock_data.xlsx', sheet_name=stock, index_col='日期', parse_dates=True)
     baseline_df = pd.read_excel('stock_data.xlsx', sheet_name=baseline, index_col='date', parse_dates=True)
-    feature_df = pd.read_excel('动力煤特征.xlsx', sheet_name=feature, index_col='日期', parse_dates=True)
+    feature_df = xl_object.parse(feature)
     return stock_df, baseline_df, feature_df
+
 
 
 # --- 按钮 1：执行特征工程 ---
