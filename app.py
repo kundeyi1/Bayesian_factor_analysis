@@ -300,7 +300,7 @@ op = st.sidebar.slider("观察期 (observation_periods)", 30, 250, 30)
 profit_target = st.sidebar.number_input("目标超额收益率 (profit_setted)", value=0.0, step=0.01)
 
 s_input = st.sidebar.text_area("策略逻辑 (Python 表达式)", 
-                              value="(df['卡尔曼滤波'].diff(1) < 0) & (df['卡尔曼滤波'].diff(1).diff(1) < 0)")
+                              value="例：df['卡尔曼滤波'].diff(1) < 0")
 
 @st.cache_data
 def load_data(stock, baseline, feature):
