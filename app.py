@@ -315,7 +315,8 @@ st.subheader("🌐 云端数据实时维护")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 try:
-    df_gsheet = conn.read(spreadsheet=st.secrets["gsheet_url"], ttl=0)
+    #df_gsheet = conn.read(spreadsheet=st.secrets["gsheet_url"], ttl=0)
+    df_gsheet = "https://docs.google.com/spreadsheets/d/1P3446_9mBi-7qrAMi78F1gHDHGIOCjw-/edit?usp=sharing&ouid=116487443839473589964&rtpof=true&sd=true"
     st.write("在下方编辑数据，点击同步即可永久保存至云端：")
     edited_df = st.data_editor(df_gsheet, num_rows="dynamic", use_container_width=True)
     
