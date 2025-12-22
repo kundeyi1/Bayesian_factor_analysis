@@ -244,8 +244,8 @@ if st.button("执行回测分析", use_container_width=True):
             fig = make_subplots(rows=2, cols=2, subplot_titles=("胜率修正", "净值表现", "信号触发", "实时仓位"))
             fig.add_trace(go.Scatter(x=df_res.index, y=df_res['P(W)'], name='先验', line=dict(color='orange')), 1, 1)
             fig.add_trace(go.Scatter(x=df_res.index, y=df_res['P(W|C)'], name='后验', line=dict(color='grey', dash='dot')), 1, 1)
-            fig.add_trace(go.Scatter(x=df_res.index, y=df_res['仓位净值'], name='策略', line=dict(color='red')), 1, 2)
-            fig.add_trace(go.Scatter(x=df_res.index, y=df_res['先验仓位净值'], name='基准', line=dict(color='grey')), 1, 2)
+            fig.add_trace(go.Scatter(x=df_res.index, y=df_res['仓位净值'], name='策略仓位净值', line=dict(color='red')), 1, 2)
+            fig.add_trace(go.Scatter(x=df_res.index, y=df_res['先验仓位净值'], name='先验仓位净值', line=dict(color='grey')), 1, 2)
 
             fig.add_trace(go.Scatter(
                 x=df_res.index, 
