@@ -58,14 +58,30 @@ def calculate_seasonal_zscore_walk_forward(df_input, value_col='原始数据'):
     return df['seasonal_z']
 
 def FE(original_feature, n_MA, n_D, Y_window, Q_window, feature_name, use_kalman):
-    # 1. 准备基础 DataFrame 并保留原始索引
+    # 1. 准备基础 DataFrame
     df = pd.DataFrame(index=original_feature.index)
-    df['原始数据'] = original_feature.iloc[:, 0]
+    
+    # 【核心修复】：尝试将第一列转化为数值，无法转化的变为空值 (NaN)
+    # 很多时候 Excel 里的数字被存成了“文本”，必须用 to_numeric 强制拉回来
+    raw_series = pd.to_numeric(original_feature.iloc[:, 0], errors='coerce')
+    
+    # 防御性检查：如果第一列全是空（说明第一列可能是日期字符串），则尝试取第二列
+    if raw_series.isna().all() and original_feature.shape[1] > 1:
+        raw_series = pd.to_numeric(original_feature.iloc[:, 1], errors='coerce')
+    
+    # 填充缺失值（防止卡尔曼滤波或滚动计算因空值报错）
+    df['原始数据'] = raw_series.ffill().bfill() 
+
+    # 再次强制转换为 float，确保 Pandas 不再把它当成 object
+    clean_data = df['原始数据'].astype(float)
+
     if use_kalman:
-        df['卡尔曼滤波'] = apply_filterpy_kalman(df['原始数据'], Q_val=0.01, R_val=0.1)
-        data = df['卡尔曼滤波']
+        # 传入纯 float 序列
+        df['卡尔曼滤波'] = apply_filterpy_kalman(clean_data, Q_val=0.01, R_val=0.1)
+        data = df['卡尔曼滤波'].astype(float) # 确保滤波结果也是 float
     else:
-        data = df['原始数据']
+        data = clean_data
+        
     for _ in feature_name:
         if _ == "移动平均":
             for ma in n_MA:
