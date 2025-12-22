@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from streamlit_gsheets import GSheetsConnection
 
 def apply_filterpy_kalman(series, Q_val=0.01, R_val=0.1):
     from filterpy.kalman import KalmanFilter
