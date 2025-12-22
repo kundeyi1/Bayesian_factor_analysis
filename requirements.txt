@@ -4,6 +4,4 @@ matplotlib
 filterpy
 openpyxl
 streamlit
-matplotlib
-os
 seaborn
