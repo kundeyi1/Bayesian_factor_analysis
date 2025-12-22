@@ -201,55 +201,53 @@ profit_target = st.sidebar.number_input("目标超额收益", value=0.0, step=0.
 s_input = st.sidebar.text_area("策略逻辑 (Python)", value="df['一阶导数'] < 0")
 
 # --- 主界面按钮 ---
-col1, col2 = st.columns(2)
 
-with col1:
-    if st.button("🛠 执行特征工程", use_container_width=True):
-        if 'raw_feature_df' not in st.session_state:
-            st.error("请先在左侧加载数据！")
-        else:
-            with st.spinner('特征处理中...'):
-                raw_f = st.session_state['raw_feature_df']
-                processed_fe = FE(raw_f, [n_MA], [n_D], 12, 12, features_op, use_kalman)
-                st.session_state['feature_data_after'] = processed_fe
-                st.success("特征工程完成！")
-                st.dataframe(processed_fe.tail())
+if st.button("🛠 执行特征工程", use_container_width=True):
+    if 'raw_feature_df' not in st.session_state:
+        st.error("请先在左侧加载数据！")
+    else:
+        with st.spinner('特征处理中...'):
+            raw_f = st.session_state['raw_feature_df']
+            processed_fe = FE(raw_f, [n_MA], [n_D], 12, 12, features_op, use_kalman)
+            st.session_state['feature_data_after'] = processed_fe
+            st.success("特征工程完成！")
+            st.dataframe(processed_fe.tail())
 
-with col2:
-    if st.button("🚀 执行回测分析", use_container_width=True):
-        if st.session_state['feature_data_after'] is None:
-            st.error("请先执行特征工程！")
-        else:
-            with st.spinner('贝叶斯回测中...'):
-                # 读取本地股票数据 (需确保文件在同目录下)
-                try:
-                    stock_raw = pd.read_excel('stock_data.xlsx', sheet_name=stock_selected, index_col='日期', parse_dates=True)
-                    baseline_raw = pd.read_excel('stock_data.xlsx', sheet_name=baseline_selected, index_col='date', parse_dates=True)
-                except:
-                    st.error("本地 stock_data.xlsx 读取失败，请检查文件。")
-                    st.stop()
 
-                fe_data = st.session_state['feature_data_after']
-                p_data = set_price_data(stock_raw, baseline_raw, fe_data, hp)
-                df_res = bayesian_analysis(p_data, fe_data, profit_target, op, hp, fe_data.columns.tolist(), s_input)
+if st.button("🚀 执行回测分析", use_container_width=True):
+    if st.session_state['feature_data_after'] is None:
+        st.error("请先执行特征工程！")
+    else:
+        with st.spinner('贝叶斯回测中...'):
+            # 读取本地股票数据 (需确保文件在同目录下)
+            try:
+                stock_raw = pd.read_excel('stock_data.xlsx', sheet_name=stock_selected, index_col='日期', parse_dates=True)
+                baseline_raw = pd.read_excel('stock_data.xlsx', sheet_name=baseline_selected, index_col='date', parse_dates=True)
+            except:
+                st.error("本地 stock_data.xlsx 读取失败，请检查文件。")
+                st.stop()
 
-                # --- 结果展示 ---
-                final_nav = df_res['仓位净值'].iloc[-1]
-                prior_nav = df_res['先验仓位净值'].iloc[-1]
-                
-                c1, c2, c3 = st.columns(3)
-                c1.metric("策略净值", f"{final_nav:.3f}", f"{(final_nav-1):.2%}")
-                c2.metric("先验净值", f"{prior_nav:.3f}", f"{(prior_nav-1):.2%}", delta_color="off")
-                c3.metric("超额增益", f"{(final_nav-prior_nav):.2%}")
+            fe_data = st.session_state['feature_data_after']
+            p_data = set_price_data(stock_raw, baseline_raw, fe_data, hp)
+            df_res = bayesian_analysis(p_data, fe_data, profit_target, op, hp, fe_data.columns.tolist(), s_input)
 
-                # Plotly 图表
-                fig = make_subplots(rows=2, cols=2, subplot_titles=("胜率修正", "净值表现", "信号触发", "实时仓位"))
-                fig.add_trace(go.Scatter(x=df_res.index, y=df_res['P(W)'], name='先验', line=dict(color='orange')), 1, 1)
-                fig.add_trace(go.Scatter(x=df_res.index, y=df_res['P(W|C)'], name='后验', line=dict(color='grey', dash='dot')), 1, 1)
-                fig.add_trace(go.Scatter(x=df_res.index, y=df_res['仓位净值'], name='策略', line=dict(color='red')), 1, 2)
-                fig.add_trace(go.Scatter(x=df_res.index, y=df_res['先验仓位净值'], name='基准', line=dict(color='grey')), 1, 2)
-                fig.add_trace(go.Bar(x=df_res.index, y=df_res['信号触发'], name='信号', marker_color='orange', opacity=0.3), 2, 1)
-                fig.add_trace(go.Scatter(x=df_res.index, y=df_res['仓位'], name='仓位', fill='tozeroy', line=dict(color='rgba(0,0,255,0.5)')), 2, 2)
-                
-                fig.update_layout(height=700, template="plotly_white")
-                st.plotly_chart(fig, use_container_width=True)
+            # --- 结果展示 ---
+            final_nav = df_res['仓位净值'].iloc[-1]
+            prior_nav = df_res['先验仓位净值'].iloc[-1]
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("策略净值", f"{final_nav:.3f}", f"{(final_nav-1):.2%}")
+            c2.metric("先验净值", f"{prior_nav:.3f}", f"{(prior_nav-1):.2%}", delta_color="off")
+            c3.metric("超额增益", f"{(final_nav-prior_nav):.2%}")
+
+            # Plotly 图表
+            fig = make_subplots(rows=2, cols=2, subplot_titles=("胜率修正", "净值表现", "信号触发", "实时仓位"))
+            fig.add_trace(go.Scatter(x=df_res.index, y=df_res['P(W)'], name='先验', line=dict(color='orange')), 1, 1)
+            fig.add_trace(go.Scatter(x=df_res.index, y=df_res['P(W|C)'], name='后验', line=dict(color='grey', dash='dot')), 1, 1)
+            fig.add_trace(go.Scatter(x=df_res.index, y=df_res['仓位净值'], name='策略', line=dict(color='red')), 1, 2)
+            fig.add_trace(go.Scatter(x=df_res.index, y=df_res['先验仓位净值'], name='基准', line=dict(color='grey')), 1, 2)
+            fig.add_trace(go.Bar(x=df_res.index, y=df_res['信号触发'], name='信号', marker_color='orange', opacity=0.3), 2, 1)
+            fig.add_trace(go.Scatter(x=df_res.index, y=df_res['仓位'], name='仓位', fill='tozeroy', line=dict(color='rgba(0,0,255,0.5)')), 2, 2)
+            
+            fig.update_layout(height=700, template="plotly_white")
+            st.plotly_chart(fig, use_container_width=True)
