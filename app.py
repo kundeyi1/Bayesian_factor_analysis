@@ -1,482 +1,255 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from streamlit_gsheets import GSheetsConnection
+import os
+
+# ==========================================
+# 1. 核心算法逻辑 (增强了鲁棒性)
+# ==========================================
 
 def apply_filterpy_kalman(series, Q_val=0.01, R_val=0.1):
     from filterpy.kalman import KalmanFilter
-    
-    # 1. 初始化滤波器
-    # dim_x=1: 状态变量为1维（位置）
-    # dim_z=1: 观测变量为1维（测量值）
+    # 确保传入的是 numpy 数组且无空值
+    vals = series.fillna(method='ffill').fillna(method='bfill').values
     kf = KalmanFilter(dim_x=1, dim_z=1)
-    
-    # 2. 配置参数
-    kf.x = np.array([[series.iloc[0]]])  # 初始状态：设置为第一个观测值
-    kf.F = np.array([[1.]])         # 状态转移矩阵
-    kf.H = np.array([[1.]])         # 观测矩阵
-    kf.P *= 10.                     # 初始协方差，表示对初始值的不确定性
-    kf.R = R_val                    # 测量噪声方差
-    kf.Q = Q_val                    # 过程噪声方差
+    kf.x = np.array([[vals[0]]])
+    kf.F = np.array([[1.]])
+    kf.H = np.array([[1.]])
+    kf.P *= 10.
+    kf.R = R_val
+    kf.Q = Q_val
     
     filtered_results = []
-    
-    # 3. 遍历数据并更新
-    for z in series:
-        kf.predict()         # 预测下一时刻状态
-        kf.update(z)         # 根据观测值更新估计
+    for z in vals:
+        kf.predict()
+        kf.update(z)
         filtered_results.append(kf.x[0, 0])
-        
     return filtered_results
 
-def calculate_seasonal_zscore_walk_forward(df_input, value_col='原始数据'):
-    """
-    计算滚动季节性 Z-Score (无未来函数版)
-    逻辑：当前周的均值和标准差仅由历史同周数据决定
-    """
-    df = df_input.copy()
-    df['week'] = df.index.isocalendar().week
-    df['year'] = df.index.year
-    
-    # 初始化结果列
-    df['seasonal_z'] = np.nan
-    
-    # 按照周进行分组处理
-    for week_num, group in df.groupby('week'):
-        # 核心：计算该周在历史上的滚动均值和标准差 (expanding)
-        # shift(1) 是关键：确保今天计算 Z-Score 时，用的是去年及以前的统计量
-        rolling_mean = group[value_col].expanding().mean().shift(1)
-        rolling_std = group[value_col].expanding().std().shift(1)
-        
-        # 计算 Z-Score
-        z_scores = (group[value_col] - rolling_mean) / rolling_std
-        df.loc[group.index, 'seasonal_z'] = z_scores
-        
-    return df['seasonal_z']
-
 def FE(original_feature, n_MA, n_D, Y_window, Q_window, feature_name, use_kalman):
-    # 1. 准备基础 DataFrame
-    df = pd.DataFrame(index=original_feature.index)
+    """
+    特征工程：智能识别数值列，避开日期列导致的编码错误
+    """
+    # 1. 自动筛选数值列 (避开日期类型)
+    numeric_df = original_feature.select_dtypes(include=[np.number])
+    if numeric_df.empty:
+        # 如果没有识别出数字列，尝试暴力转换
+        numeric_df = original_feature.apply(pd.to_numeric, errors='coerce').dropna(axis=1, how='all')
     
-    # 【核心修复】：尝试将第一列转化为数值，无法转化的变为空值 (NaN)
-    # 很多时候 Excel 里的数字被存成了“文本”，必须用 to_numeric 强制拉回来
-    raw_series = pd.to_numeric(original_feature.iloc[:, 0], errors='coerce')
-    
-    # 防御性检查：如果第一列全是空（说明第一列可能是日期字符串），则尝试取第二列
-    if raw_series.isna().all() and original_feature.shape[1] > 1:
-        raw_series = pd.to_numeric(original_feature.iloc[:, 1], errors='coerce')
-    
-    # 填充缺失值（防止卡尔曼滤波或滚动计算因空值报错）
-    df['原始数据'] = raw_series.ffill().bfill() 
+    if numeric_df.empty:
+        st.error("无法在所选表格中找到数值列，请检查数据格式。")
+        return pd.DataFrame()
 
-    # 再次强制转换为 float，确保 Pandas 不再把它当成 object
-    clean_data = df['原始数据'].astype(float)
+    target_col = numeric_df.columns[0]
+    df = pd.DataFrame(index=original_feature.index)
+    # 强制转换为 float64，防止 Timestamp 混入
+    df['原始数据'] = numeric_df[target_col].astype(float).ffill().bfill()
 
     if use_kalman:
-        # 传入纯 float 序列
-        df['卡尔曼滤波'] = apply_filterpy_kalman(clean_data, Q_val=0.01, R_val=0.1)
-        data = df['卡尔曼滤波'].astype(float) # 确保滤波结果也是 float
+        df['卡尔曼滤波'] = apply_filterpy_kalman(df['原始数据'])
+        data = df['卡尔曼滤波']
     else:
-        data = clean_data
+        data = df['原始数据']
         
-    for _ in feature_name:
-        if _ == "移动平均":
+    for op in feature_name:
+        if op == "移动平均":
             for ma in n_MA:
                 df[f'移动平均{ma}'] = data.rolling(window=ma).mean()
-        if _ == "差分":
+        if op == "差分":
             for d in n_D:
                 df[f'差分{d}'] = data.pct_change(periods=d)
-        if _ == "一阶导数":
+        if op == "一阶导数":
             df['一阶导数'] = data.diff(1)
-        if _ == "二阶导数":
+        if op == "二阶导数":
             df['二阶导数'] = data.diff(1).diff(1)
-    
-        #滚动年度累计
-        #df['滚动年度累计'] = original_feature.iloc[:, 0].rolling(window=Y_window, min_periods=Y_window).sum()
-
-        #滚动年度环比
-        #df['滚动年度环比'] = original_feature.iloc[:, 0]/ original_feature.iloc[:, 0].shift(Q_window) - 1
-        
-        #滚动年度同比
-        #df['滚动年度同比'] = original_feature.iloc[:, 1].pct_change(periods=Y_window)
-    
     
     return df
 
-def visualize(df, s, stock_name, feature_sheet_name):
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-    import matplotlib.dates as mdates
-
-    plt.rcParams['font.sans-serif'] = ['Arial Unicode MS'] 
-    plt.rcParams['axes.unicode_minus'] = False
-
-
-    plt.figure(figsize=(12, 8))
-
-    plt.subplot(2, 2, 1)
-    plt.title('先验胜率')
-    plt.plot(df.index, df['P(W)'], label='先验胜率', color='orange')
-    plt.legend()
-    ax = plt.gca()
-    ax.xaxis.set_major_locator(mdates.DayLocator(interval=12*30))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-    plt.gcf().autofmt_xdate()
-
-    plt.subplot(2, 2, 2)
-    plt.title('后验胜率对先验胜率的修正')
-    #plt.plot(df.index, df['超额净值'], label='超额净值', color='blue')
-    plt.plot(df.index, df['P(W)'], label='先验胜率', color='orange')
-    plt.plot(df.index, df['P(W|C)'], label='后验胜率', color='grey')
-    plt.legend()
-    ax = plt.gca()
-    ax.xaxis.set_major_locator(mdates.DayLocator(interval=12*30))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-    plt.gcf().autofmt_xdate()
-
-    plt.subplot(2, 2, 3)
-    plt.title('历史条件触发情况')
-    plt.plot(df.index, df['超额净值'], label='超额净值', color='blue')
-    plt.plot(df.index, df['信号触发'], label='信号触发', color='orange')
-    plt.legend()
-    ax = plt.gca()
-    ax.xaxis.set_major_locator(mdates.DayLocator(interval=12*30))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-    plt.gcf().autofmt_xdate()
-
-    plt.subplot(2, 2, 4)
-    plt.title('观测条件增益情况')
-    #定义归一化函数
-    def min_max_scale(series):
-        return (series - series.min()) / (series.max() - series.min())
-    
-    plt.plot(df.index, min_max_scale(df['仓位净值']), label='信号策略净值', color='orange')
-    plt.plot(df.index, min_max_scale(df['先验仓位净值']), label='先验策略净值', color='grey')
-    plt.plot(df.index, min_max_scale(df['仓位']), label='信号策略仓位', color='blue')
-    plt.axhline(0.5, color='red', linestyle='--', alpha=0.3)
-    plt.legend()
-    ax = plt.gca()
-    ax.xaxis.set_major_locator(mdates.DayLocator(interval=12*30))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-    plt.gcf().autofmt_xdate()
-
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    save_dir = os.path.join(current_dir, "output_pics")
-    
-    # 确保文件夹存在，如果没有就创建一个
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
-
-    # --- 关键修复：清洗文件名 ---
-    # 替换掉 / (路径符), : (保留符), 以及可能引起问题的引号和括号
-    clean_s = s.replace('/', '_div_').replace(':', '_').replace(' ', '').replace("'", "").replace("[", "").replace("]", "")
-    clean_stock = stock_name.replace(':', '_')
-    
-    filename = f"{clean_stock}_{feature_sheet_name}_{clean_s}.png"
-    save_path = os.path.join(save_dir, filename)
-    # --------------------------
-
-    plt.savefig(save_path)
-    plt.close()
-    print(f'图像保存成功: {filename}')
-    
-def set_price_data(stock_data, baselinedata, feature_data, holding_period): #构建价格数据
-    
-    #处理时间差异，有些日期可能缺失，取交集
-    common_dates = stock_data.index.intersection(baselinedata.index).sort_values()
-    stock_filtered = stock_data.loc[common_dates]
-    baseline_filtered = baselinedata.loc[common_dates]
+def set_price_data(stock_data, baselinedata, feature_data, holding_period):
+    # 确保索引对齐
+    common_dates = stock_data.index.intersection(baselinedata.index).intersection(feature_data.index).sort_values()
     
     price_data = pd.DataFrame({
-        '日期': common_dates,
-        '股价': stock_filtered['收盘'],
-        '基准': baseline_filtered['close'],
+        '股价': stock_data.loc[common_dates, '收盘'],
+        '基准': baselinedata.loc[common_dates, 'close'],
     }, index=common_dates)
-    
-    price_data = price_data[~price_data.index.duplicated(keep='first')]
-    feature_data = feature_data[~feature_data.index.duplicated(keep='first')]
-    
-    common_dates2 = price_data.index.intersection(feature_data.index).sort_values()
-    price_data = price_data.loc[common_dates2]
     
     price_data['股价收益率'] = price_data['股价'].pct_change()
     price_data['基准收益率'] = price_data['基准'].pct_change()
     price_data['超额收益率'] = price_data['股价收益率'] - price_data['基准收益率']
     
-    price_data['股价净值'] = (1 + price_data['股价收益率']).cumprod()
-    price_data.iloc[0, price_data.columns == '股价净值'] = 1
-    
-    price_data['基准净值'] = (1 + price_data['基准收益率']).cumprod()
-    price_data.iloc[0, price_data.columns == '基准净值'] = 1
-    
-    price_data['超额净值'] = (1 + price_data['超额收益率']).cumprod()
-    price_data.iloc[0, price_data.columns == '超额净值'] = 1
-    
-    price_data['持有期绝对收益'] = price_data['股价净值'].shift(-holding_period) - price_data['股价净值']
+    # 计算净值
+    price_data['超额净值'] = (1 + price_data['超额收益率'].fillna(0)).cumprod()
     price_data['持有期超额收益率'] = price_data['超额净值'].shift(-holding_period) / price_data['超额净值'] - 1
     
-    price_data.to_excel('prcie_data.xlsx', index=False)
     return price_data
 
-def bayesian_analysis(price_data, feature_data, profit_setted, observation_periods, holding_period, f, s): #进行贝叶斯测算
-    
-    price_data = price_data[~price_data.index.duplicated(keep='first')]
-    feature_data = feature_data[~feature_data.index.duplicated(keep='first')]
-    
+def bayesian_analysis(price_data, feature_data, profit_setted, observation_periods, holding_period, f, s):
     common_dates = price_data.index.intersection(feature_data.index).sort_values()
-    price_filtered = price_data.loc[common_dates]
-    feature_filtered = feature_data.loc[common_dates]
+    df = price_data.loc[common_dates].copy()
     
-    df=pd.DataFrame({
-        '日期': common_dates,
-        '股价': price_filtered['股价'],
-        '基准': price_filtered['基准'],
-        '超额净值': price_filtered['超额净值'],
-        '超额收益率': price_filtered['超额收益率'],
-        '持有期超额收益率': price_filtered['持有期超额收益率']
-    }, index=common_dates)
+    for col in f:
+        df[col] = feature_data.loc[common_dates, col]
     
-    #读入特征
-    for _ in f:
-        df[f'{_}'] = feature_filtered[_] 
+    df['胜率触发'] = (df['持有期超额收益率'] > profit_setted).astype(int)
+    df['胜率不触发'] = 1 - df['胜率触发']
     
-    df['胜率触发'] = df['持有期超额收益率'].apply(lambda x: 1 if x > profit_setted else 0)
-    df['胜率不触发'] = (df['胜率触发'] == 0).astype(int)
-    
-    #excel中方式有区别，个人认为还是如下的代码正确
-    #df['P(W)'] = df['胜率触发'].rolling(window=observation_periods, min_periods=1).mean().shift(holding_period)
-    # 但为了复现excel结果，采用如下方式：
-    # 1. 计算两个版本的位移
-    # 版本 A: 适用于早期的 Shift 12
-    pw_early = df['胜率触发'].rolling(window=observation_periods, min_periods=1).mean().shift(holding_period)
-    # 版本 B: 适用于稳定期的 Shift 13 (即 holding_period + 1)
-    pw_late = df['胜率触发'].rolling(window=observation_periods, min_periods=1).mean().shift(holding_period + 1)
-    # 2. 定义切换点
-    # 切换点 = 统计期 (100) + 持有期 (12) = 112
-    cutoff_index = observation_periods + holding_period
-    # 3. 混合拼接
-    # 如果 DataFrame 索引是默认的数字索引 (0, 1, 2...)
+    # 贝叶斯核心计算
+    pw_early = df['胜率触发'].rolling(window=observation_periods).mean().shift(holding_period)
+    pw_late = df['胜率触发'].rolling(window=observation_periods).mean().shift(holding_period + 1)
+    cutoff = observation_periods + holding_period
     df['P(W)'] = pw_early
-    df.iloc[cutoff_index:, df.columns.get_loc('P(W)')] = pw_late.iloc[cutoff_index:]
+    if len(df) > cutoff:
+        df.iloc[cutoff:, df.columns.get_loc('P(W)')] = pw_late.iloc[cutoff:]
     
-    df['信号触发'] = (eval(s)).astype(int) #这里写触发条件
+    # 安全执行策略逻辑
+    try:
+        df['信号触发'] = eval(s).astype(int)
+    except Exception as e:
+        st.error(f"策略表达式错误: {e}")
+        df['信号触发'] = 0
+
+    # 条件概率 P(C|W) 和 P(C|not W)
+    shift_n = holding_period + 1
+    df['W_and_C'] = ((df['胜率触发'] == 1) & (df['信号触发'] == 1)).astype(int)
+    df['notW_and_C'] = ((df['胜率触发'] == 0) & (df['信号触发'] == 1)).astype(int)
     
-    df['W and C'] = ((df['胜率触发'] == 1) & (df['信号触发'] == 1)).astype(int)
-    df['notW and C'] = ((df['胜率触发'] == 0) & (df['信号触发'] == 1)).astype(int)
-    df['P(C|W)'] = (df['W and C'].rolling(window=observation_periods, min_periods=1).sum().shift(holding_period+1) / df['胜率触发'].rolling(window=observation_periods, min_periods=1).sum().shift(holding_period+1))
-    df['P(C|notW)'] = df['notW and C'].rolling(window=observation_periods, min_periods=1).sum().shift(holding_period+1) / df['胜率不触发'].rolling(window=observation_periods, min_periods=1).sum().shift(holding_period+1)
-    df['P(W|C)'] = (df['P(C|W)'] * df['P(W)']) / (df['P(C|W)'] * df['P(W)'] + df['P(C|notW)'] * (1 - df['P(W)']))
+    p_c_w = (df['W_and_C'].rolling(observation_periods).sum().shift(shift_n) / 
+             df['胜率触发'].rolling(observation_periods).sum().shift(shift_n))
+    p_c_notw = (df['notW_and_C'].rolling(observation_periods).sum().shift(shift_n) / 
+                df['胜率不触发'].rolling(observation_periods).sum().shift(shift_n))
     
+    df['P(W|C)'] = (p_c_w * df['P(W)']) / (p_c_w * df['P(W)'] + p_c_notw * (1 - df['P(W)']))
+    
+    # 信号生成与仓位
     df['买入信号'] = np.where(
-        (df['P(W|C)'] > df['P(W)']) & (df['信号触发'] == 1) & ((df['P(W|C)'] > 0.5) | (df['P(W|C)'] > df['P(W|C)'].shift(1)*0.9)),
-        1,
-        0
+        (df['P(W|C)'] > df['P(W)']) & (df['信号触发'] == 1) & 
+        ((df['P(W|C)'] > 0.5) | (df['P(W|C)'] > df['P(W|C)'].shift(1)*0.9)), 1, 0
     )
+    df['仓位'] = np.where(df['买入信号'] == 1, 
+                        df['信号触发'].shift(1).rolling(holding_period).sum() / holding_period, 0)
     
-    #仓位由过去持有期内信号触发次数决定
-    df['仓位'] = np.where(
-        (df['买入信号'] == 1),
-        df['信号触发'].shift(1).rolling(window=holding_period).sum() / holding_period,
-        0
-    )
+    df['仓位净值'] = (1 + (df['仓位'].shift(1) * df['超额收益率'].fillna(0))).cumprod()
+    df['先验仓位净值'] = (1 + (df['P(W)'].shift(1) * df['超额收益率'].fillna(0))).cumprod()
     
-    strategy_returns = df['仓位'].shift(1) * df['超额收益率']
-    df['仓位净值'] = (1 + strategy_returns).cumprod()
-    df['仓位净值'] = df['仓位净值'].fillna(1)
-    
-    strategy_returns2 = df['P(W)'].shift(1) * df['超额收益率']
-    df['先验仓位净值'] = (1 + strategy_returns2).cumprod()
-    df['先验仓位净值'] = df['先验仓位净值'].fillna(1)
-    
-    df.to_excel('bayes.xlsx', index=False)
     return df
 
+# ==========================================
+# 2. 界面展示逻辑
+# ==========================================
 
-st.set_page_config(page_title="煤炭择时因子回测系统", layout="wide")
-st.title("煤炭行业贝叶斯择时回测平台")
+st.set_page_config(page_title="煤炭择时回测系统", layout="wide")
+st.title("🚢 煤炭行业贝叶斯择时回测平台")
 
-
-# 初始化 Session State 用于跨按钮保存特征数据
+# 初始化数据状态
+if 'xl_object' not in st.session_state:
+    st.session_state['xl_object'] = None
 if 'feature_data_after' not in st.session_state:
     st.session_state['feature_data_after'] = None
 
-st.sidebar.header("策略参数配置")
+# --- 侧边栏：数据同步 ---
+st.sidebar.header("📁 数据源同步")
+SHEET_ID = "1P3446_9mBi-7qrAMi78F1gHDHGIOCjw-" # 你的谷歌表ID
+
+@st.cache_data(ttl=3600)
+def fetch_xl_object(sheet_id):
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
+    return pd.ExcelFile(url)
+
+if st.sidebar.button("🔄 同步云端表结构"):
+    with st.spinner("正在扫描云端所有工作表..."):
+        st.session_state['xl_object'] = fetch_xl_object(SHEET_ID)
+        st.success("同步成功！")
+
+# 只有同步后才显示下拉菜单
+if st.session_state['xl_object'] is not None:
+    xl = st.session_state['xl_object']
+    feature_selected = st.sidebar.selectbox("选择特征维度", xl.sheet_names)
+    
+    # 核心数据加载函数：带日期自动识别
+    def load_and_clean_feature(xl_obj, sheet_name):
+        df = xl_obj.parse(sheet_name)
+        # 自动寻找日期列并设为索引
+        for col in df.columns:
+            if '日期' in str(col) or 'Date' in str(col) or 'time' in str(col).lower():
+                df[col] = pd.to_datetime(df[col])
+                df.set_index(col, inplace=True)
+                break
+        return df
+
+    if st.sidebar.button("📥 加载选定表数据"):
+        df_raw = load_and_clean_feature(xl, feature_selected)
+        st.session_state['raw_feature_df'] = df_raw
+        st.write(f"✅ {feature_selected} 数据预览：")
+        st.dataframe(df_raw.head())
+
+# --- 侧边栏：参数配置 ---
+st.sidebar.divider()
 stock_selected = st.sidebar.selectbox("选择标的", ["中国神华"])
 baseline_selected = st.sidebar.selectbox("选择基准", ["沪深300"])
-
-
-def get_all_sheet_names(sheet_id):
-    # 构造导出 XLSX 的直链
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
-    
-    try:
-        # 1. 使用 ExcelFile 加载整个工作簿（不加载数据，只读结构，速度快）
-        xl = pd.ExcelFile(url)
-        
-        # 2. 获取所有表名
-        all_sheets = xl.sheet_names
-        return all_sheets, xl
-    except Exception as e:
-        st.error(f"无法识别表格结构: {e}")
-        return [], None
-
-# --- 在 Streamlit 界面中的应用 ---
-SHEET_ID = "1P3446_9mBi-7qrAMi78F1gHDHGIOCjw-"
-
-# 自动获取
-sheet_list, xl_object = get_all_sheet_names(SHEET_ID)
-
-if sheet_list:
-    # 动态生成下拉框，选项就是从云端实时抓取的表名
-    feature_selected = st.sidebar.selectbox("特征维度", sheet_list)
-    
-    # 根据用户选择，从已加载的对象中读取具体数据
-    if st.button("加载选定表数据"):
-        df = xl_object.parse(feature_selected) # parse 比再次 read_excel 更快
-        st.write(f"已加载 {feature_selected} 数据：")
-        st.dataframe(df)
-
-
-feature_frequence = st.sidebar.selectbox("特征频率", ["日", "周", "月"])
 use_kalman = st.sidebar.checkbox("启用卡尔曼滤波", value=True)
-features_op = st.sidebar.multiselect("对所选特征进行的操作", ["移动平均", "差分", "一阶导数", "二阶导数"])
+features_op = st.sidebar.multiselect("操作算子", ["移动平均", "差分", "一阶导数", "二阶导数"], default=["一阶导数"])
 
-n_MA = st.sidebar.slider("移动平均数", 1, 365, 5)
-n_D = st.sidebar.slider("差分数", 1, 10, 1)
-hp = st.sidebar.slider("持有期 (holding_period)", 1, 60, 2)
-op = st.sidebar.slider("观察期 (observation_periods)", 30, 250, 30)
-profit_target = st.sidebar.number_input("目标超额收益率 (profit_setted)", value=0.0, step=0.01)
+n_MA = st.sidebar.slider("MA 窗口", 1, 60, 5)
+n_D = st.sidebar.slider("差分阶数", 1, 10, 1)
+hp = st.sidebar.slider("持有期 (HP)", 1, 20, 5)
+op = st.sidebar.slider("观察期 (OP)", 30, 250, 60)
+profit_target = st.sidebar.number_input("目标超额收益", value=0.0, step=0.01)
 
-s_input = st.sidebar.text_area("策略逻辑 (Python 表达式)", 
-                              value="例：df['卡尔曼滤波'].diff(1) < 0")
+s_input = st.sidebar.text_area("策略逻辑 (Python)", value="df['一阶导数'] < 0")
 
-@st.cache_data
-def load_data(stock, baseline, feature):
-    stock_df = pd.read_excel('stock_data.xlsx', sheet_name=stock, index_col='日期', parse_dates=True)
-    baseline_df = pd.read_excel('stock_data.xlsx', sheet_name=baseline, index_col='date', parse_dates=True)
-    feature_df = xl_object.parse(feature)
-    return stock_df, baseline_df, feature_df
+# --- 主界面按钮 ---
+col1, col2 = st.columns(2)
 
+with col1:
+    if st.button("🛠 执行特征工程", use_container_width=True):
+        if 'raw_feature_df' not in st.session_state:
+            st.error("请先在左侧加载数据！")
+        else:
+            with st.spinner('特征处理中...'):
+                raw_f = st.session_state['raw_feature_df']
+                processed_fe = FE(raw_f, [n_MA], [n_D], 12, 12, features_op, use_kalman)
+                st.session_state['feature_data_after'] = processed_fe
+                st.success("特征工程完成！")
+                st.dataframe(processed_fe.tail())
 
+with col2:
+    if st.button("🚀 执行回测分析", use_container_width=True):
+        if st.session_state['feature_data_after'] is None:
+            st.error("请先执行特征工程！")
+        else:
+            with st.spinner('贝叶斯回测中...'):
+                # 读取本地股票数据 (需确保文件在同目录下)
+                try:
+                    stock_raw = pd.read_excel('stock_data.xlsx', sheet_name=stock_selected, index_col='日期', parse_dates=True)
+                    baseline_raw = pd.read_excel('stock_data.xlsx', sheet_name=baseline_selected, index_col='date', parse_dates=True)
+                except:
+                    st.error("本地 stock_data.xlsx 读取失败，请检查文件。")
+                    st.stop()
 
-# --- 按钮 1：执行特征工程 ---
-if st.button("🛠 执行特征工程"):
-    with st.spinner('特征处理中...'):
-        stock_raw, baseline_raw, feature_raw = load_data(stock_selected, baseline_selected, feature_selected)
-        
-        # 运行 FE 函数并存入 session_state
-        processed_fe = FE(feature_raw, 
-                          n_MA=[n_MA], 
-                          n_D=[n_D], 
-                          Y_window=12, 
-                          Q_window=12, 
-                          feature_name=features_op,
-                          use_kalman=use_kalman)
-        
-        st.session_state['feature_data_after'] = processed_fe
-        
-        st.success(f"特征工程完成！生成列：{processed_fe.columns.tolist()}")
-        st.subheader("特征工程结果预览")
-        st.dataframe(processed_fe)
+                fe_data = st.session_state['feature_data_after']
+                p_data = set_price_data(stock_raw, baseline_raw, fe_data, hp)
+                df_res = bayesian_analysis(p_data, fe_data, profit_target, op, hp, fe_data.columns.tolist(), s_input)
 
-# --- 按钮 2：执行回测分析 ---
-if st.button("🚀 执行回测分析"):
-    # 如果用户没点第一个按钮，自动运行一次 FE
-    if st.session_state['feature_data_after'] is None:
-        stock_raw, baseline_raw, feature_raw = load_data(stock_selected, baseline_selected, feature_selected)
-        st.session_state['feature_data_after'] = FE(feature_raw, [n_MA], [n_D], 12, 12, features_op, use_kalman)
-    
-    with st.spinner('贝叶斯回测计算中...'):
-        stock_raw, baseline_raw, _ = load_data(stock_selected, baseline_selected, feature_selected)
-        fe_data = st.session_state['feature_data_after']
-        
-        # 1. 构建价格数据
-        price_data = set_price_data(stock_raw, baseline_raw, fe_data, holding_period=hp)
-        
-        # 2. 贝叶斯分析
-        df_result = bayesian_analysis(
-            price_data, 
-            fe_data, 
-            profit_setted=profit_target, 
-            observation_periods=op, 
-            holding_period=hp, 
-            f=fe_data.columns.tolist(), 
-            s=s_input
-        )
+                # --- 结果展示 ---
+                final_nav = df_res['仓位净值'].iloc[-1]
+                prior_nav = df_res['先验仓位净值'].iloc[-1]
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("策略净值", f"{final_nav:.3f}", f"{(final_nav-1):.2%}")
+                c2.metric("先验净值", f"{prior_nav:.3f}", f"{(prior_nav-1):.2%}", delta_color="off")
+                c3.metric("超额增益", f"{(final_nav-prior_nav):.2%}")
 
-        st.success("回测完成！")
-        
-        # 1. 计算核心指标
-        # 最终策略净值
-        final_strategy_nav = df_result['仓位净值'].iloc[-1]
-        # 最终基准净值
-        final_prior_nav = df_result['先验仓位净值'].iloc[-1]
-
-        # 计算收益率
-        strategy_return = (final_strategy_nav - 1)
-        prior_return = (final_prior_nav - 1)
-        excess_return = strategy_return - prior_return # 超额收益
-
-        # 2. 使用列布局并行显示
-        m1, m2, m3 = st.columns(3)
-
-        with m1:
-            st.metric(
-                label="策略最终净值", 
-                value=f"{final_strategy_nav:.3f}", 
-                delta=f"{strategy_return:.2%}"
-            )
-
-        with m2:
-            st.metric(
-                label="先验基准净值", 
-                value=f"{final_prior_nav:.3f}", 
-                delta=f"{prior_return:.2%}",
-                delta_color="off" # 基准的变化通常设为灰色
-            )
-
-        with m3:
-            # 超额收益，如果是正的就显示绿色增量
-            st.metric(
-                label="贝叶斯超额增益", 
-                value=f"{excess_return:.2%}", 
-                delta=f"{(excess_return):.2%}"
-            )
-        
-        st.divider() # 添加分割线
-
-        # 3. Plotly 交互图表 (修复 alpha 后的版本)
-        st.subheader("回测详细数据看板")
-
-        fig = make_subplots(
-            rows=2, cols=2, 
-            subplot_titles=("胜率修正曲线", "策略净值表现", "信号触发点位", "实时仓位变动")
-        )
-
-        # 子图 1
-        fig.add_trace(go.Scatter(x=df_result.index, y=df_result['P(W)'], name='先验胜率', line=dict(color='orange')), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_result.index, y=df_result['P(W|C)'], name='后验胜率', line=dict(color='grey', dash='dot')), row=1, col=1)
-
-        # 子图 2
-        fig.add_trace(go.Scatter(x=df_result.index, y=df_result['仓位净值'], name='策略净值', line=dict(color='red')), row=1, col=2)
-        fig.add_trace(go.Scatter(x=df_result.index, y=df_result['先验仓位净值'], name='基准净值', line=dict(color='grey')), row=1, col=2)
-
-        # 子图 3
-        fig.add_trace(go.Scatter(x=df_result.index, y=df_result['超额净值'], name='超额净值', line=dict(color='blue')), row=2, col=1)
-        fig.add_trace(go.Bar(x=df_result.index, y=df_result['信号触发'], name='信号', marker_color='orange', opacity=0.3), row=2, col=1)
-
-        # 子图 4 (已修复 alpha 错误)
-        fig.add_trace(go.Scatter(
-            x=df_result.index, 
-            y=df_result['仓位'], 
-            name='实时仓位', 
-            fill='tozeroy', 
-            line=dict(color='rgba(0, 0, 255, 0.5)'), # 使用 rgba 替代 alpha
-            opacity=0.4
-        ), row=2, col=2)
-
-        fig.update_layout(height=700, hovermode="x unified", template="plotly_white")
-        st.plotly_chart(fig, use_container_width=True)
+                # Plotly 图表
+                fig = make_subplots(rows=2, cols=2, subplot_titles=("胜率修正", "净值表现", "信号触发", "实时仓位"))
+                fig.add_trace(go.Scatter(x=df_res.index, y=df_res['P(W)'], name='先验', line=dict(color='orange')), 1, 1)
+                fig.add_trace(go.Scatter(x=df_res.index, y=df_res['P(W|C)'], name='后验', line=dict(color='grey', dash='dot')), 1, 1)
+                fig.add_trace(go.Scatter(x=df_res.index, y=df_res['仓位净值'], name='策略', line=dict(color='red')), 1, 2)
+                fig.add_trace(go.Scatter(x=df_res.index, y=df_res['先验仓位净值'], name='基准', line=dict(color='grey')), 1, 2)
+                fig.add_trace(go.Bar(x=df_res.index, y=df_res['信号触发'], name='信号', marker_color='orange', opacity=0.3), 2, 1)
+                fig.add_trace(go.Scatter(x=df_res.index, y=df_res['仓位'], name='仓位', fill='tozeroy', line=dict(color='rgba(0,0,255,0.5)')), 2, 2)
+                
+                fig.update_layout(height=700, template="plotly_white")
+                st.plotly_chart(fig, use_container_width=True)
