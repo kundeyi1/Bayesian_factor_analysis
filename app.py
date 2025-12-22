@@ -265,7 +265,37 @@ if st.button("执行回测分析", use_container_width=True):
                 fillcolor='rgba(255, 165, 0, 0.2)', # 浅橙色背景
             ), 2, 1)
             
-            fig.add_trace(go.Scatter(x=df_res.index, y=df_res['仓位'], name='仓位', fill='tozeroy', line=dict(color='rgba(0,0,255,0.5)')), 2, 2)
+            fig.add_trace(
+                go.Scatter(
+                    x=df_res.index, 
+                    y=df_res['超额净值'], 
+                    name='超额净值', 
+                    line=dict(color='blue', width=2),
+                    hovertemplate='日期: %{x}<br>超额净值: %{y:.4f}<extra></extra>'
+                ), 
+                row=2, col=2, secondary_y=False
+            )
+            
+            # 2. 绘制仓位（作为次 Y 轴阴影，使用阶梯线）
+            fig.add_trace(
+                go.Scatter(
+                    x=df_res.index, 
+                    y=df_res['仓位'], 
+                    name='策略仓位', 
+                    fill='tozeroy', 
+                    # 核心优化：使用阶梯线（hv），真实还原调仓的离散跳变
+                    line_shape='hv', 
+                    line=dict(color='rgba(255, 165, 0, 0.8)', width=1), 
+                    # 浅橙色填充，不遮挡背景净值线
+                    fillcolor='rgba(255, 165, 0, 0.2)', 
+                    hovertemplate='日期: %{x}<br>当前仓位: %{y:.2f}<extra></extra>'
+                ), 
+                row=2, col=2, secondary_y=True
+            )
+            
+            # 3. 更新 Y 轴设置，确保尺度专业
+            fig.update_yaxes(title_text="净值水平", secondary_y=False, row=2, col=2)
+            fig.update_yaxes(title_text="仓位权重", range=[0, 1.1], secondary_y=True, row=2, col=2)
             
             fig.update_layout(height=700, template="plotly_white")
             st.plotly_chart(fig, use_container_width=True)
