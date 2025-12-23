@@ -194,8 +194,8 @@ features_op = st.sidebar.multiselect("操作算子", ["移动平均", "差分", 
 
 n_MA = st.sidebar.slider("移动平均窗口", 1, 60, 5)
 n_D = st.sidebar.slider("差分期数", 1, 10, 1)
-hp = st.sidebar.slider("持有期", 1, 365, 5)
-op = st.sidebar.slider("观察期", 1, 365, 60)
+hp = st.sidebar.slider("持有期（以数据频率为单位）", 1, 365, 5)
+op = st.sidebar.slider("观察期（以数据频率为单位）", 1, 365, 60)
 profit_target = st.sidebar.number_input("目标超额收益", value=0.0, step=0.01)
 
 s_input = st.sidebar.text_area("策略逻辑 (Python格式)", value="df['一阶导数'] < 0")
