@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment Variables - 不上传包含真实 Token 的文件
+.env
+.env.local
+*.env
+set_env.ps1
+set_env.sh
+
+# Streamlit Secrets - 本地测试用，不上传
+.streamlit/secrets.toml
+
+# Data Files - 示例数据文件不上传（太大或包含敏感信息）
+*.xlsx
+*.xls
+*.csv
+stock_data.xlsx
+
+# Logs
+*.log
+
+# OS
+Thumbs.db
